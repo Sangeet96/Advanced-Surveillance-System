@@ -6,12 +6,6 @@ __pycache__/
 venv/
 .env
 
-# Model weights
-*.caffemodel
-*.tflite
-
-# Videos
-/videos/
 
 # VS Code settings
 .vscode/
