@@ -1,23 +1,19 @@
 import cv2
 
-class FaceBlur:
-    def __init__(self):
-        self.detector = cv2.CascadeClassifier(
-            cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-        )
+# Load OpenCV's pre-trained face detection model
+face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
 
-    def blur_faces(self, frame, target_box=None):
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        faces = self.detector.detectMultiScale(gray, 1.1, 4)
+def blur_faces(frame):
+    """
+    Detects faces in a frame and blurs them.
+    Returns the frame with blurred faces.
+    """
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(40, 40))
 
-        for (x, y, w, h) in faces:
-            if not self._is_inside_target(x, y, w, h, target_box):
-                face_region = frame[y:y+h, x:x+w]
-                frame[y:y+h, x:x+w] = cv2.GaussianBlur(face_region, (99, 99), 30)
-        return frame
+    for (x, y, w, h) in faces:
+        face_region = frame[y:y+h, x:x+w]
+        face_region = cv2.GaussianBlur(face_region, (35, 35), 30)
+        frame[y:y+h, x:x+w] = face_region
 
-    def _is_inside_target(self, x, y, w, h, target_box):
-        if target_box is None:
-            return False
-        (tx1, ty1, tx2, ty2) = target_box
-        return (x > tx1 and y > ty1 and x + w < tx2 and y + h < ty2)
+    return frame

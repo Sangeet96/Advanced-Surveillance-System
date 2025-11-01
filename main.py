@@ -1,59 +1,114 @@
 import cv2
-from detection.detector import Detector
+import threading
+import queue
+import time
+
+from detection.detector import YOLODetector
 from tracking.tracker import MultiTracker
 from control.servo_controller import ServoController
-from privacy.face_blur import FaceBlur
-import time
-start_time = time.time()
+from privacy.face_blur import blur_faces
 
-cv2.setUseOptimized(True)
-cv2.setNumThreads(4)
+# ---------------- QUEUES ---------------- #
+frame_queue = queue.Queue(maxsize=2)
+target_queue = queue.Queue(maxsize=2)
 
-cap = cv2.VideoCapture("videos/test_video.mp4")  # use 0 for live webcam
-detector = Detector()
-tracker = MultiTracker()
-servo = ServoController()
-face_blur = FaceBlur()
+# ---------------- THREAD 1: FRAME CAPTURE ---------------- #
+class FrameCaptureThread(threading.Thread):
+    def __init__(self, src=0):
+        super().__init__()
+        self.cap = cv2.VideoCapture(src)
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        self.running = True
 
-frame_count = 0
-DETECT_EVERY_N_FRAMES = 10  # adjust for speed/accuracy trade-off
+    def run(self):
+        while self.running:
+            ret, frame = self.cap.read()
+            if not ret:
+                break
+            if not frame_queue.full():
+                frame_queue.put(frame)
+        self.cap.release()
 
-while True:
-    ret, frame = cap.read()
-    if not ret:
-        break
+    def stop(self):
+        self.running = False
 
-    frame = cv2.resize(frame, (640, 360))
-    
-    if frame_count % 10 == 0:
-        fps = 10 / (time.time() - start_time)
-        print(f"FPS: {fps:.1f}")
-        start_time = time.time()
 
-    if frame_count % DETECT_EVERY_N_FRAMES == 0:
-        boxes = detector.detect(frame)
-        tracked = tracker.update(boxes)
-    else:
-        tracked = tracker.tracker.update([])  # predict next positions
+# ---------------- THREAD 2: DETECTION + TRACKING ---------------- #
+class DetectionThread(threading.Thread):
+    def __init__(self, detector, tracker):
+        super().__init__()
+        self.detector = detector
+        self.tracker = tracker
+        self.running = True
 
-    if tracked:
-        # choose target with largest bounding box (closest person)
-        target = tracked[0]
-        target_x, target_y, target_id = target
-        center_x, center_y = frame.shape[1] // 2, frame.shape[0] // 2
-        servo.update(target_x, target_y, center_x, center_y)
+    def run(self):
+        while self.running:
+            if not frame_queue.empty():
+                frame = frame_queue.get()
+                boxes = self.detector.detect(frame)
+                tracked = self.tracker.update(boxes)
 
-        # optionally blur other faces
-        frame = face_blur.blur_faces(frame)
+                # pick main target (largest or center-most person)
+                if tracked:
+                    target = max(tracked, key=lambda t: t[0])
+                    if not target_queue.full():
+                        target_queue.put(target)
 
-        cv2.circle(frame, (target_x, target_y), 6, (0, 255, 0), -1)
-        cv2.putText(frame, f"Tracking ID: {target_id}",
-                    (target_x - 50, target_y - 20),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                # show bounding boxes and IDs
+                for (x, y, tid) in tracked:
+                    cv2.circle(frame, (x, y), 10, (0, 0, 255), -1)
+                    cv2.putText(frame, f"ID {tid}", (x - 10, y - 10),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
-    cv2.imshow("Advanced Surveillance System", frame)
-    if cv2.waitKey(1) & 0xFF == ord('q'):
-        break
+                frame = blur_faces(frame)
+                cv2.imshow("Advanced Surveillance System", frame)
 
-cap.release()
-cv2.destroyAllWindows()
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    self.stop()
+
+    def stop(self):
+        self.running = False
+
+
+# ---------------- THREAD 3: SERVO CONTROL ---------------- #
+class ServoThread(threading.Thread):
+    def __init__(self, controller):
+        super().__init__()
+        self.controller = controller
+        self.running = True
+
+    def run(self):
+        while self.running:
+            if not target_queue.empty():
+                target = target_queue.get()
+                self.controller.update(target)
+            time.sleep(0.02)  # smoother servo response
+
+    def stop(self):
+        self.running = False
+
+
+# ---------------- MAIN ---------------- #
+if __name__ == "__main__":
+    detector = YOLODetector()
+    tracker = MultiTracker()
+    controller = ServoController()
+
+    capture_thread = FrameCaptureThread(src=0)  # 0 for webcam or path to video
+    detection_thread = DetectionThread(detector, tracker)
+    servo_thread = ServoThread(controller)
+
+    capture_thread.start()
+    detection_thread.start()
+    servo_thread.start()
+
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("Stopping threads...")
+        capture_thread.stop()
+        detection_thread.stop()
+        servo_thread.stop()
+        cv2.destroyAllWindows()
